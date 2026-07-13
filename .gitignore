@@ -1,0 +1,11 @@
+# python
+__pycache__/
+*.py[cod]
+
+# ArSSR run artifacts (data, outputs, checkpoints, logs)
+data/
+model/
+log/
+test/input/
+test/output/
+runs/

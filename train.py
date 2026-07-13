@@ -9,11 +9,14 @@ import data
 import torch
 import model
 import argparse
+import os
 import time
 from torch.utils.tensorboard import SummaryWriter
 
 if __name__ == '__main__':
 
+    os.makedirs('./log', exist_ok=True)
+    os.makedirs('./model', exist_ok=True)
     writer = SummaryWriter('./log')
 
     # -----------------------
@@ -52,6 +55,9 @@ if __name__ == '__main__':
                         help='the number of sampled voxel coordinates (i.e., K in Equ. 3)')
     parser.add_argument('-gpu', type=int, default=0, dest='gpu',
                         help='the number of GPU')
+    parser.add_argument('-pre_trained_model', type=str, default='', dest='pre_trained_model',
+                        help='optional: path to a pretrained ArSSR .pkl to load before training (fine-tune).'
+                             ' encoder_name/depth/width/feature_dim MUST match the checkpoint.')
 
     args = parser.parse_args()
     encoder_name = args.encoder_name
@@ -67,6 +73,7 @@ if __name__ == '__main__':
     batch_size = args.batch_size
     sample_size = args.sample_size
     gpu = args.gpu
+    pre_trained_model = args.pre_trained_model
 
     # -----------------------
     # display parameters
@@ -107,6 +114,9 @@ if __name__ == '__main__':
     DEVICE = torch.device('cuda:{}'.format(str(gpu) if torch.cuda.is_available() else 'cpu'))
     ArSSR = model.ArSSR(encoder_name=encoder_name, feature_dim=feature_dim,
                         decoder_depth=int(decoder_depth / 2), decoder_width=decoder_width).to(DEVICE)
+    if pre_trained_model:
+        ArSSR.load_state_dict(torch.load(pre_trained_model, map_location=DEVICE))
+        print('Loaded pretrained weights for fine-tuning: {}'.format(pre_trained_model))
     loss_fun = torch.nn.L1Loss()
     optimizer = torch.optim.Adam(params=ArSSR.parameters(), lr=lr)
 
@@ -119,8 +129,9 @@ if __name__ == '__main__':
         for i, (img_lr, xyz_hr, img_hr) in enumerate(train_loader):
             # forward
             img_lr = img_lr.unsqueeze(1).to(DEVICE).float()  # N×1×h×w×d
-            img_hr = img_hr.to(DEVICE).float().view(batch_size, -1).unsqueeze(-1)  # N×K×1 (K Equ. 3)
-            xyz_hr = xyz_hr.view(batch_size, -1, 3).to(DEVICE).float()  # N×K×3
+            bs = img_lr.shape[0]  # actual batch size (last batch may be partial)
+            img_hr = img_hr.to(DEVICE).float().view(bs, -1).unsqueeze(-1)  # N×K×1 (K Equ. 3)
+            xyz_hr = xyz_hr.view(bs, -1, 3).to(DEVICE).float()  # N×K×3
             img_pre = ArSSR(img_lr, xyz_hr)  # N×K×1
             loss = loss_fun(img_pre, img_hr)
             # backward
@@ -146,7 +157,7 @@ if __name__ == '__main__':
 
         ArSSR.eval()
         with torch.no_grad():
-            loss_val = 0
+            loss_val = 0.0
             for i, (img_lr, xyz_hr, img_hr) in enumerate(val_loader):
                 img_lr = img_lr.unsqueeze(1).to(DEVICE).float()  # N×1×h×w×d
                 xyz_hr = xyz_hr.view(1, -1, 3).to(DEVICE).float()  # N×Q×3 (Q=H×W×D)
@@ -154,12 +165,13 @@ if __name__ == '__main__':
                 img_hr = img_hr.to(DEVICE).float().view(1, -1).unsqueeze(-1)  # N×Q×1 (Q=H×W×D)
                 img_pre = ArSSR(img_lr, xyz_hr)  # N×Q×1 (Q=H×W×D)
                 loss_val += loss_fun(img_hr, img_pre)
-                # save validation
-                if (e + 1) % summary_epoch == 0:
-                    # save model
-                    torch.save(ArSSR.state_dict(), 'model/model_param_{}.pkl'.format(e + 1))
-
-        writer.add_scalar('MES_val', loss_val / len(val_loader), e + 1)
+        if len(val_loader) > 0:
+            writer.add_scalar('MES_val', loss_val / len(val_loader), e + 1)
+            print('(VAL) Epoch[{}/{}], Loss:{:.10f}'.format(e + 1, epoch, loss_val / len(val_loader)))
+        # save checkpoint every summary_epoch (independent of validation availability)
+        if (e + 1) % summary_epoch == 0:
+            torch.save(ArSSR.state_dict(), 'model/model_param_{}.pkl'.format(e + 1))
+            print('saved model/model_param_{}.pkl'.format(e + 1))
         # release memory
         img_lr = None
         img_hr = None
