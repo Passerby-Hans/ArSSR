@@ -33,6 +33,8 @@ def main():
     ap.add_argument("--hr_dir", required=True, help="dir of HR .nii.gz volumes")
     ap.add_argument("--out_dir", default="data")
     ap.add_argument("--patch", type=int, default=40, help="patch side (default 40)")
+    ap.add_argument("--margin", type=int, default=40,
+                    help="border margin to avoid black background (default 40; use ~1 for CHAOS T2 which fills the FOV)")
     ap.add_argument("--patches_per_vol", type=int, default=6)
     ap.add_argument("--train_frac", type=float, default=0.85)
     ap.add_argument("--seed", type=int, default=0)
@@ -50,7 +52,7 @@ def main():
     print(f"volumes: {len(vols)} -> train {len(split['train'])}, val {len(split['val'])}")
 
     p = args.patch
-    margin = 40  # avoid black border (same as upstream)
+    margin = args.margin  # border margin (avoid black background)
     for phase, flist in split.items():
         for f in tqdm(flist, desc=phase):
             ref = os.path.join(args.hr_dir, f)
@@ -63,10 +65,16 @@ def main():
                 print(f"  skip {f}: too small {arr.shape} for patch {p}+margin")
                 continue
             name = f.split(".nii")[0]
+
+            def _start(dim):
+                # random offset in [margin, dim-p-margin); if that range is empty
+                # (dim == p+2*margin, e.g. CHAOS T2 z=26 with p=24 margin=1) fall
+                # back to the single valid offset = margin.
+                lo, hi = margin, dim - p - margin
+                return lo if hi <= lo else int(rng.integers(lo, hi))
+
             for i in range(args.patches_per_vol):
-                x0 = int(rng.integers(margin, arr.shape[0] - p - margin))
-                y0 = int(rng.integers(margin, arr.shape[1] - p - margin))
-                z0 = int(rng.integers(margin, arr.shape[2] - p - margin))
+                x0, y0, z0 = _start(arr.shape[0]), _start(arr.shape[1]), _start(arr.shape[2])
                 patch = arr[x0:x0 + p, y0:y0 + p, z0:z0 + p]
                 utils.write_img(
                     vol=patch, ref_path=ref,

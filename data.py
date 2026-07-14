@@ -28,8 +28,11 @@ class ImgTrain(data.Dataset):
 
     def __getitem__(self, item):
         patch_hr = self.patch_hr[item]
-        # randomly get an up-sampling scale from [2, 4]
-        s = np.round(random.uniform(2, 4 + 0.04), 1)
+        # randomly get an up-sampling scale from [2, s_max]; s_max is capped so the
+        # (10*s) HR crop fits the patch side (patch may be < 40 for small volumes
+        # like CHAOS T2 with z~26-39). For patch=40 this is unchanged ([2,4]).
+        s_max = min(4.0, patch_hr.shape[0] / 10.0)
+        s = min(np.round(random.uniform(2, s_max + 0.04), 1), s_max)
         # compute the size of HR patch according to the scale
         hr_h, hr_w, hr_d = (np.array([10, 10, 10]) * s).astype(int)
         # generate HR patch by cropping
