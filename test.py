@@ -46,7 +46,13 @@ if __name__ == '__main__':
     parser.add_argument('-output_path', type=str, default='test/output', dest='output_path',
                         help='the file save path of reconstructed result')
     parser.add_argument('-scale', type=float, default='2.0', dest='scale',
-                        help='the up-sampling scale k')
+                        help='the up-sampling scale k (isotropic, used when -sr_scale is not given)')
+    parser.add_argument('-sr_axis', type=str, default='auto', dest='sr_axis',
+                        help="anisotropic SR: which ARRAY axis (SimpleITK z,y,x order) to super-resolve. "
+                             "'auto' = thickest axis (argmax of spacing), or 0/1/2. Used with -sr_scale.")
+    parser.add_argument('-sr_scale', type=float, default=None, dest='sr_scale',
+                        help="anisotropic SR: factor applied ONLY to -sr_axis (other axes x1). "
+                             "Overrides isotropic -scale. e.g. -sr_axis auto -sr_scale 2.67 -> z-only 2.67x.")
 
     args = parser.parse_args()
     encoder_name = args.encoder_name
@@ -59,6 +65,8 @@ if __name__ == '__main__':
     input_path = args.input_path
     output_path = args.output_path
     scale = args.scale
+    sr_axis = args.sr_axis
+    sr_scale = args.sr_scale
 
     # -----------------------
     # model
@@ -78,15 +86,26 @@ if __name__ == '__main__':
     # -----------------------
     filenames = os.listdir(input_path)
     for f in tqdm(filenames):
-        test_loader = data.loader_test(in_path_lr=r'{}/{}'.format(input_path, f), scale=scale)
-
         # read the dimension size and spacing of LR input image
         lr = SimpleITK.ReadImage(r'{}/{}'.format(input_path, f))
-        lr_size = SimpleITK.GetArrayFromImage(lr).shape
-        lr_spacing = lr.GetSpacing()
+        lr_size = SimpleITK.GetArrayFromImage(lr).shape          # array order (z,y,x)
+        lr_spacing = lr.GetSpacing()                              # SimpleITK order (x,y,z)
+        arr_spacing = np.array(lr_spacing)[::-1]                  # array order (z,y,x)
+
+        # build per-axis scale vector (array order)
+        if sr_scale is not None:
+            ax = int(np.argmax(arr_spacing)) if sr_axis == 'auto' else int(sr_axis)
+            scale_arr = np.ones(3, dtype=float)
+            scale_arr[ax] = float(sr_scale)
+            label = '{}x_axis{}'.format(sr_scale, ax)
+        else:
+            scale_arr = np.ones(3, dtype=float) * float(scale)
+            label = str(scale)
+
+        test_loader = data.loader_test(in_path_lr=r'{}/{}'.format(input_path, f), scale=scale_arr)
         # then compute the dimension size and spacing of the HR image
-        hr_size = (np.array(lr_size) * scale).astype(int)
-        hr_spacing = np.array(lr_spacing) / scale
+        hr_size = (np.array(lr_size) * scale_arr).astype(int)
+        hr_spacing = np.array(lr_spacing) / scale_arr[::-1]       # back to SimpleITK (x,y,z) order
 
         ArSSR.eval()
         with torch.no_grad():
@@ -105,6 +124,6 @@ if __name__ == '__main__':
         # save file
         utils.write_img(vol=img_pre,
                         ref_path=r'{}/{}'.format(input_path, f),
-                        out_path=r'{}/ArSSR_{}_recon_{}x_{}'.format(output_path, encoder_name,
-                                                                    str(scale).replace('.', 'd'), f),
+                        out_path=r'{}/ArSSR_{}_recon_{}_{}'.format(output_path, encoder_name,
+                                                                    label.replace('.', 'd'), f),
                         new_spacing=hr_spacing)
